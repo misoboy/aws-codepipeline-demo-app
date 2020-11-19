@@ -1,0 +1,66 @@
+version: 0.2
+
+env:
+  variables:
+    AWS_DEFAULT_REGION: "ap-northeast-2"
+    AWS_ACCOUNT_ID: "*******"
+    IMAGE_REPO_NAME: "demo/app"
+
+phases:
+  install:
+    runtime-versions:
+      java: corretto8
+    commands:
+      - echo Entered the install phase...
+  pre_build:
+    commands:
+      - echo Module Build...
+      - chmod +x $CODEBUILD_SRC_DIR/mvnw
+      - echo Logging in to Amazon ECR...
+      - $(aws ecr get-login --no-include-email --region $AWS_DEFAULT_REGION)
+  build:
+    commands:
+      # demo app module build
+      - cd $CODEBUILD_SRC_DIR
+      - ./mvnw clean package -DskipTests
+      - echo Module Build Complete...
+      # Docker Image Build
+      - IMAGE_LATEST_VERSION=1.$(date +%y%m%d%H%M%S)
+      - docker build -t $IMAGE_REPO_NAME:$IMAGE_LATEST_VERSION -f $CODEBUILD_SRC_DIR/deploy/Dockerfile $CODEBUILD_SRC_DIR
+      - echo Docker Image Build Complete...
+      - docker tag $IMAGE_REPO_NAME:$IMAGE_LATEST_VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_LATEST_VERSION
+      # Docker Image Push (ECR)
+      - echo Pushing the Docker image...
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_LATEST_VERSION
+  post_build:
+    commands:
+      - echo Entered the post_build phase...
+      - echo Build completed on `date`
+      # Docker Image 최근 버전 조회
+      - IMAGE_LATEST_VERSION=$(echo $(aws ecr describe-images --repository-name $IMAGE_REPO_NAME --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]') | tr -d '"')
+      - FAMILY="demo-app-task"
+      - TASK_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/aws-ecs-task-mgmt-role"
+      - EXECUTION_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsTaskExecutionRole"
+      - CONTAINER_NAME="demo-app"
+      - CONTAINER_PORT="8080"
+      - CONTAINER_IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:${IMAGE_LATEST_VERSION}"
+      # ECS Task Definition 생성
+      - |
+        jq -n --arg FAMILY $FAMILY --arg TASK_ROLE_ARN $TASK_ROLE_ARN --arg EXECUTION_ROLE_ARN $EXECUTION_ROLE_ARN --arg CONTAINER_NAME $CONTAINER_NAME --arg CONTAINER_IMAGE $CONTAINER_IMAGE \
+          '{"family":$FAMILY,"taskRoleArn": $TASK_ROLE_ARN,"executionRoleArn": $EXECUTION_ROLE_ARN, "networkMode": "awsvpc", "requiresCompatibilities": ["FARGATE"],"cpu": "1024","memory": "2048","containerDefinitions": [{"logConfiguration": {"logDriver": "awslogs","options": {"awslogs-group": "/ecs/demo-app", "awslogs-region": "ap-northeast-2", "awslogs-stream-prefix": "ecs"}},"name": $CONTAINER_NAME,"image": $CONTAINER_IMAGE,"portMappings":[{"containerPort":8080,"hostPort":8080,"protocol":"tcp"}]}]}' \
+          > task-definition.json
+      - TASK_DEFINITION_JSON=$(aws ecs register-task-definition --cli-input-json file://task-definition.json)
+      - TASK_DEFINITION_ARN=$(echo $TASK_DEFINITION_JSON | jq -r '.taskDefinition .taskDefinitionArn')
+      # CodeDeploy Appspec 생성
+      - >
+        jq -n --arg TASK_DEFINITION_ARN $TASK_DEFINITION_ARN --arg CONTAINER_NAME $CONTAINER_NAME --arg CONTAINER_PORT $CONTAINER_PORT \
+        '{"version": 0.0, "Resources": [{"TargetService": {"Type": "AWS::ECS::Service", "Properties": {"TaskDefinition": $TASK_DEFINITION_ARN, "LoadBalancerInfo": {"ContainerName": $CONTAINER_NAME, "ContainerPort": $CONTAINER_PORT}}}}], "Hooks": []}' \
+        > appspec.json
+
+artifacts:
+  files:
+    - $CODEBUILD_SRC_DIR/appspec.json
+  discard-paths: yes
+cache:
+  paths:
+    - '/root/.mvn/**/*'
