@@ -3,7 +3,7 @@ version: 0.2
 env:
   variables:
     AWS_DEFAULT_REGION: "ap-northeast-2"
-    AWS_ACCOUNT_ID: "*******"
+    AWS_ACCOUNT_ID: "348951190761"
     IMAGE_REPO_NAME: "demo/app"
 
 phases:
@@ -15,14 +15,12 @@ phases:
   pre_build:
     commands:
       - echo Module Build...
-      - chmod +x $CODEBUILD_SRC_DIR/mvnw
       - echo Logging in to Amazon ECR...
       - $(aws ecr get-login --no-include-email --region $AWS_DEFAULT_REGION)
   build:
     commands:
       # demo app module build
       - cd $CODEBUILD_SRC_DIR
-      - ./mvnw clean package -DskipTests
       - echo Module Build Complete...
       # Docker Image Build
       - IMAGE_LATEST_VERSION=1.$(date +%y%m%d%H%M%S)
@@ -47,7 +45,7 @@ phases:
       # ECS Task Definition 생성
       - |
         jq -n --arg FAMILY $FAMILY --arg TASK_ROLE_ARN $TASK_ROLE_ARN --arg EXECUTION_ROLE_ARN $EXECUTION_ROLE_ARN --arg CONTAINER_NAME $CONTAINER_NAME --arg CONTAINER_IMAGE $CONTAINER_IMAGE \
-          '{"family":$FAMILY,"taskRoleArn": $TASK_ROLE_ARN,"executionRoleArn": $EXECUTION_ROLE_ARN, "networkMode": "awsvpc", "requiresCompatibilities": ["FARGATE"],"cpu": "1024","memory": "2048","containerDefinitions": [{"logConfiguration": {"logDriver": "awslogs","options": {"awslogs-group": "/ecs/demo-app", "awslogs-region": "ap-northeast-2", "awslogs-stream-prefix": "ecs"}},"name": $CONTAINER_NAME,"image": $CONTAINER_IMAGE,"portMappings":[{"containerPort":8080,"hostPort":8080,"protocol":"tcp"}]}]}' \
+          '{"family":$FAMILY,"taskRoleArn": $TASK_ROLE_ARN,"executionRoleArn": $EXECUTION_ROLE_ARN, "networkMode": "awsvpc", "requiresCompatibilities": ["FARGATE"],"cpu": "1024","memory": "2048","containerDefinitions": [{"logConfiguration": {"logDriver": "awslogs","options": {"awslogs-group": "/ecs/demo-app-task", "awslogs-region": "ap-northeast-2", "awslogs-stream-prefix": "ecs"}},"name": $CONTAINER_NAME,"image": $CONTAINER_IMAGE,"portMappings":[{"containerPort":8080,"hostPort":8080,"protocol":"tcp"}]}]}' \
           > task-definition.json
       - TASK_DEFINITION_JSON=$(aws ecs register-task-definition --cli-input-json file://task-definition.json)
       - TASK_DEFINITION_ARN=$(echo $TASK_DEFINITION_JSON | jq -r '.taskDefinition .taskDefinitionArn')
